@@ -1,0 +1,116 @@
+#!/bin/bash
+#Unicph ID account lookup from AD using ldapsearch.
+#Depends on ldaptools,perl
+#2017/2018 Jakob Bruun Hansen. KU-IT
+#
+#Usage: kuid [opt] [unicph id]
+#Options:
+#-n Print name 
+#-m Print email address
+#-s Silent on errors
+#-h This help message
+
+set -e
+export PERL_UNICODE=SDL
+
+ldapuri='ldap:///dc%3Dunicph%2Cdc%3Ddomain'
+searchbase='dc=unicph,dc=domain'
+fields='cn displayName title department mail mobile'
+kuidregex='^([a-zA-Z]{3}[0-9]{3}a?|[a-zA-Z]{2}[0-9][a-zA-Z]{2}[0-9])$'
+inputerr='Sorry, not a valid unicph format'
+helpmsg="kuid: unicph ID information lookup 
+Usage: kuid [opt] [unicph id]
+Options:
+-n Print name 
+-m Print email address
+-s Silent on errors
+-h This help message"
+#-D Dump user directory listing
+#-e Print employeeType (Active,Guest,Inactive)
+outfmt="s/::/:/ 
+ 	s/^cn:/id:/
+	s/^displayName:/name:/ 
+	/^#/d
+	/^$/d
+	/^CN=/d
+	/^dn:/d"
+	
+short="s/^[a-zA-Z\:]*: //
+	/^#/d
+	/^$/d
+	/^CN=/d
+	/^dn:/d"
+
+die () {
+  echo -e >&2 "$@"
+  exit 1
+}
+
+chkdep () {
+  if ! hash "$1" >/dev/null 2>&1; then
+    die "Sorry, missing dependency on this system. Please ask your friendly system administrator to make \"$1\" available on system \"$(hostname)\"."
+  fi
+}
+
+chkkrbtiket() {
+  if ! klist -s; then
+    die "Error: Ticket for id lookup not available. You will need a kerberos ticket, which you can obtain by either\n  - Log in with password authentication.\n  - Log in with kerberos ticket (GSSAPI) delegation enabled.\n  - Run the command 'kinit' on this machine and supply your password.\nCheck your key status with 'klist'."
+  fi
+}
+
+chkdep "ldapsearch"
+
+##use system ldap.conf settings if available
+#if  ldapsearch -b "" -s base ldapServiceName >/dev/null  2>&1 ; then
+#  ldapuri="" #inl -H..
+#  searchbase=""
+#fi
+
+if [[ $# -eq 0 ]] ; then
+    echo "$helpmsg"
+    exit 0
+fi
+
+while getopts "hnms" opt; do
+  case $opt in
+    h)
+      echo "$helpmsg"
+      exit 1
+      ;;
+    n)
+     fields=displayName
+     outfmt=$short
+      ;;
+    m)
+     fields=mail
+     outfmt=$short
+     ;;
+   # e)
+   #  fields=employeeType
+   #  outfmt=$short
+   #  ;;
+    s)
+     exec 2> /dev/null
+     ;;
+#    D)
+#     fields=""
+#     outfmt=""
+#     base46cnv=1
+#     ;;
+    \?)
+    echo "try 'kuid -h' for list of options" >&2
+    exit 1
+    ;;
+  esac
+done
+shift $(($OPTIND-1))
+
+chkkrbtiket
+
+[[ "$1" =~ $kuidregex  ]] || die "$inputerr"
+id="$1"
+
+#LDAP felter med non-ASCII tegn er base64 og markeret med dobbelt ":". Konverteres til UTF8 (perl), og det ekstra : fjernes som en del af outputfmt (sed).
+ldapsearch -o ldif-wrap=no -LLL -Q -H "$ldapuri" -b "$searchbase" -- '(cn='"$id"')' $fields | \
+ perl -MMIME::Base64 -MEncode=decode -n -00 -e 's/\n +//g;s/(?<=:: )(\S+)/decode("UTF-8",decode_base64($1))/eg;print' | \
+ sed "$outfmt"
